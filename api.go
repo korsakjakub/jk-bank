@@ -35,9 +35,37 @@ func (s *APIServer) Run() {
 	router.POST("/account", s.handleCreateAccount)
 	router.DELETE("/account/:id", s.handleDeleteAccount)
 	router.POST("/transfer", s.handleTransfer)
+	router.POST("/login", s.handleLogin)
 	log.Println("JSON API server running on port ", s.listenAddr)
 
 	http.ListenAndServe(s.listenAddr, router)
+}
+
+func (s *APIServer) handleLogin(c echo.Context) error {
+	var req LoginRequest
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		return err
+	}
+
+	acc, err := s.store.GetAccountByNumber(int(req.Number))
+	if err != nil {
+		WriteJSON(c.Response().Writer, http.StatusNotFound, req)
+	}
+	if !acc.ValidPassword(req.Password) {
+		return fmt.Errorf("not authenticated")
+	}
+
+	token, err := createJWT(acc)
+	if err != nil {
+		return err
+	}
+
+	resp := LoginResponse{
+		Token: token,
+		Number: acc.Number,
+	}
+
+	return WriteJSON(c.Response().Writer, http.StatusOK, resp)
 }
 
 func (s *APIServer) handleGetAccount(c echo.Context) error {
@@ -68,17 +96,13 @@ func (s *APIServer) handleCreateAccount(c echo.Context) error {
 		return err
 	}
 
-	account := NewAccount(createAccountRequest.FirstName, createAccountRequest.LastName)
-	if err := s.store.CreateAccount(account); err != nil {
-		return err
-	}
-
-	tokenString, err := createJWT(account)
+	account, err := NewAccount(createAccountRequest.FirstName, createAccountRequest.LastName, createAccountRequest.Password)
 	if err != nil {
 		return err
 	}
-
-	fmt.Println("JWT token: ", tokenString)
+	if err := s.store.CreateAccount(account); err != nil {
+		return err
+	}
 
 	return WriteJSON(c.Response().Writer, http.StatusOK, account)
 }
@@ -131,7 +155,6 @@ func withJWTAuth(handlerFunc echo.HandlerFunc, s Storage) echo.HandlerFunc {
 		if a.Number != int64(claims["accountNumber"].(float64)) {
 			return WriteJSON(c.Response().Writer, http.StatusForbidden, ApiError{Error: "permission denied"})
 		}
-		fmt.Println(claims)
 
 		return handlerFunc(c)
 	}
